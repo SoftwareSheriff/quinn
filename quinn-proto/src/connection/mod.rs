@@ -2311,8 +2311,7 @@ where
             } else {
                 self.config.congestion_controller_factory.build(now)
             },
-            // Try ECN on the new path if it's probably not the same as an old broken path.
-            sending_ecn: self.path.sending_ecn || !maybe_rebinding,
+            sending_ecn: true,
         };
         let prev = Some(mem::replace(&mut self.path, new_path));
         // Don't clobber the original path if the previous one hasn't been validated yet

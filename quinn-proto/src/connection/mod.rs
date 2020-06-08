@@ -200,12 +200,7 @@ where
             rem_cid,
             rem_handshake_cid: rem_cid,
             rem_cid_seq: 0,
-            path: PathData {
-                remote,
-                rtt: RttEstimator::new(),
-                sending_ecn: true,
-                congestion: config.congestion_controller_factory.build(now),
-            },
+            path: PathData::new(remote, config.congestion_controller_factory.build(now)),
             prev_path: None,
             side,
             state,
@@ -3101,6 +3096,17 @@ struct PathData {
     sending_ecn: bool,
     /// Congestion controller state
     congestion: Box<dyn congestion::Controller>,
+}
+
+impl PathData {
+    fn new(remote: SocketAddr, congestion: Box<dyn congestion::Controller>) -> Self {
+        PathData {
+            remote,
+            rtt: RttEstimator::new(),
+            sending_ecn: true,
+            congestion,
+        }
+    }
 }
 
 /// Errors that can arise when sending a datagram

@@ -1136,11 +1136,7 @@ where
 
     fn detect_lost_packets(&mut self, now: Instant, pn_space: SpaceId) {
         let mut lost_packets = Vec::<u64>::new();
-        let rtt = self
-            .path
-            .rtt
-            .smoothed
-            .map_or(self.path.rtt.latest, |x| cmp::max(x, self.path.rtt.latest));
+        let rtt = self.path.rtt.get();
         let loss_delay = cmp::max(rtt.mul_f32(self.config.time_threshold), TIMER_GRANULARITY);
 
         // Packets sent before this time are deemed lost.
@@ -3042,6 +3038,11 @@ impl RttEstimator {
             self.smoothed = Some(self.latest);
             self.var = self.latest / 2;
         }
+    }
+
+    fn get(&self) -> Duration {
+        self.smoothed
+            .map_or(self.latest, |x| cmp::max(x, self.latest))
     }
 }
 

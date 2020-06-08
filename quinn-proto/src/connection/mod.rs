@@ -1245,11 +1245,9 @@ where
 
     /// Probe Timeout
     fn pto(&self) -> Duration {
-        match self.path.rtt.smoothed {
+        match self.path.rtt.pto_base() {
             None => 2 * self.config.initial_rtt,
-            Some(srtt) => {
-                srtt + cmp::max(4 * self.path.rtt.var, TIMER_GRANULARITY) + self.max_ack_delay()
-            }
+            Some(base) => base + self.max_ack_delay(),
         }
     }
 
@@ -3043,6 +3041,11 @@ impl RttEstimator {
     fn get(&self) -> Duration {
         self.smoothed
             .map_or(self.latest, |x| cmp::max(x, self.latest))
+    }
+
+    fn pto_base(&self) -> Option<Duration> {
+        self.smoothed
+            .map(|srtt| srtt + cmp::max(4 * self.var, TIMER_GRANULARITY))
     }
 }
 

@@ -28,8 +28,8 @@ use crate::{
     },
     transport_parameters::{self, TransportParameters},
     Dir, Frame, Side, StreamId, Transmit, TransportError, TransportErrorCode, VarInt,
-    LOC_CID_COUNT, MAX_STREAM_COUNT, MIN_INITIAL_SIZE, MIN_MTU, RESET_TOKEN_SIZE,
-    TIMER_GRANULARITY, VERSION,
+    LOC_CID_COUNT, MAX_STREAM_COUNT, MIN_INITIAL_SIZE, RESET_TOKEN_SIZE, TIMER_GRANULARITY,
+    VERSION,
 };
 
 mod assembler;
@@ -80,7 +80,6 @@ where
     prev_path: Option<PathData>,
     state: State,
     side: Side,
-    mtu: u16,
     /// Whether or not 0-RTT was enabled during the handshake. Does not imply acceptance.
     zero_rtt_enabled: bool,
     /// Set if 0-RTT is supported, then cleared when no longer needed.
@@ -206,7 +205,6 @@ where
             prev_path: None,
             side,
             state,
-            mtu: MIN_MTU,
             zero_rtt_enabled: false,
             zero_rtt_crypto: None,
             key_phase: false,
@@ -307,7 +305,7 @@ where
         if self.state.is_handshake()
             && !self.remote_validated
             && self.side.is_server()
-            && self.total_recvd * 3 < self.total_sent + u64::from(self.mtu)
+            && self.total_recvd * 3 < self.total_sent + u64::from(self.path.mtud.current)
         {
             trace!("blocked by anti-amplification");
             return None;
@@ -347,7 +345,7 @@ where
             ),
         };
 
-        let mut buf = Vec::with_capacity(self.mtu as usize);
+        let mut buf = Vec::with_capacity(self.path.mtud.current as usize);
         let mut coalesce = spaces.len() > 1;
         let pad_space = if self.side.is_client() && spaces.first() == Some(&SpaceId::Initial) {
             spaces.last().cloned()
@@ -502,7 +500,7 @@ where
             };
 
             buf.resize(buf.len() + tag_len, 0);
-            debug_assert!(buf.len() < self.mtu as usize);
+            debug_assert!(buf.len() < self.path.mtud.current as usize);
             let packet_buf = &mut buf[partial_encode.start..];
             partial_encode.finish(
                 packet_buf,
@@ -541,7 +539,57 @@ where
         }
 
         if buf.is_empty() {
-            return None;
+            if !self.state.is_established() {
+                return None;
+            }
+
+            let space = &mut self.spaces[SpaceId::Data];
+            let probe_size = self.path.mtud.poll_transmit(space.next_packet_number)?;
+
+            // Send an MTU discovery probe
+            let exact_number = space.get_tx_number();
+            let number = PacketNumber::new(exact_number, space.largest_acked_packet.unwrap_or(0));
+            let header = Header::Short {
+                dst_cid: self.rem_cid,
+                number,
+                spin: if self.spin_enabled {
+                    self.spin
+                } else {
+                    self.rng.gen()
+                },
+                key_phase: self.key_phase,
+            };
+            let partial_encode = header.encode(&mut buf);
+            buf.write(frame::Type::PING);
+
+            let (header_crypto, packet_crypto) = if let Some(ref crypto) = space.crypto {
+                (&crypto.header.local, &crypto.packet.local)
+            } else {
+                unreachable!("must have keys in established state")
+            };
+
+            let tag_len = packet_crypto.tag_len();
+            buf.resize(usize::from(probe_size) - tag_len, 0);
+            let packet_buf = &mut buf[partial_encode.start..];
+            partial_encode.finish(
+                packet_buf,
+                header_crypto,
+                Some((exact_number, packet_crypto)),
+            );
+
+            self.on_packet_sent(
+                now,
+                SpaceId::Data,
+                exact_number,
+                SentPacket {
+                    acks: RangeSet::new(),
+                    time_sent: now,
+                    size: buf.len() as u16,
+                    ack_eliciting: true,
+                    retransmits: Retransmits::default(),
+                    stream_frames: Vec::new(),
+                },
+            );
         }
 
         trace!("sending {} byte datagram", buf.len());
@@ -805,7 +853,7 @@ where
     /// Not necessarily the maximum size of received datagrams.
     pub fn max_datagram_size(&self) -> Option<usize> {
         // This is usually 1182 bytes, but we shouldn't document that without a doctest.
-        let max_size = self.mtu as usize
+        let max_size = self.path.mtud.current as usize
             - 1                 // flags byte
             - self.rem_cid.len()
             - 4                 // worst-case packet number size
@@ -952,6 +1000,7 @@ where
                 self.spaces[space].pending_acks.subtract(&info.acks);
                 ack_eliciting_acked |= info.ack_eliciting;
                 self.on_packet_acked(now, info);
+                self.path.mtud.acked(packet);
             }
         }
 
@@ -1170,6 +1219,7 @@ where
                     self.streams.retransmit(frame);
                 }
                 self.spaces[pn_space].pending |= info.retransmits;
+                self.path.mtud.lost(*packet);
             }
             // Don't apply congestion penalty for lost ack-only packets
             let lost_ack_eliciting = old_bytes_in_flight != self.in_flight.bytes;
@@ -2610,7 +2660,7 @@ where
 
     /// Whether UDP transmits are currently blocked by link congestion
     fn congestion_blocked(&self) -> bool {
-        self.in_flight.bytes + u64::from(self.mtu) >= self.path.congestion.window()
+        self.in_flight.bytes + u64::from(self.path.mtud.current) >= self.path.congestion.window()
     }
 
     fn decrypt_packet(

@@ -163,10 +163,7 @@ impl MtuDiscovery {
     }
 
     pub fn lost(&mut self, number: u64) {
-        match self.probe_number {
-            Some(probed) if probed == number => {}
-            _ => return,
-        };
+        if self.probe_number != Some(number) { return; }
 
         self.probe_number = None;
         self.probe_count += 1;

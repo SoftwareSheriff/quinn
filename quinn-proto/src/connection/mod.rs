@@ -562,11 +562,8 @@ where
             let partial_encode = header.encode(&mut buf);
             buf.write(frame::Type::PING);
 
-            let (header_crypto, packet_crypto) = if let Some(ref crypto) = space.crypto {
-                (&crypto.header.local, &crypto.packet.local)
-            } else {
-                unreachable!("must have keys in established state")
-            };
+            let crypto = self.crypto.as_ref().expect("must have keys in established state");
+            let (header_crypto, packet_crypto) = (&crypto.header.local, &crypto.packet.local);
 
             let tag_len = packet_crypto.tag_len();
             buf.resize(usize::from(probe_size) - tag_len, 0);
